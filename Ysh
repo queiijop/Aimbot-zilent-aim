@@ -1,0 +1,1779 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local localPlayer = Players.LocalPlayer
+
+--------------------------------------------------
+-- SETTINGS / STATE
+--------------------------------------------------
+
+local targetLock = false
+local lockedPlayer = nil
+local minimized = false
+local crosshairEnabled = true
+
+-- Silent-aim-style target selector (game-native; no raycast hooks)
+local silentAimEnabled = false
+local silentAimFOV = 130
+local silentAimFOVVisible = true
+
+-- Accepted-target mode
+local acceptedMode = false
+local acceptedPlayers = {}
+
+-- Current cycling index
+local currentIndex = 0
+
+-- Highlight currently selected player
+local currentHighlight = nil
+
+-- Players who are currently dead
+-- They become eligible again when they respawn.
+local deadPlayers = {}
+
+--------------------------------------------------
+-- GUI
+--------------------------------------------------
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "AimAssistGUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+--------------------------------------------------
+-- AIM CROSSHAIR
+--------------------------------------------------
+
+local crosshair = Instance.new("Frame")
+crosshair.Name = "AimCrosshair"
+crosshair.Size = UDim2.fromOffset(22, 22)
+crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
+crosshair.Position = UDim2.fromScale(0.5, 0.5)
+crosshair.BackgroundTransparency = 1
+crosshair.Parent = gui
+
+local horizontal = Instance.new("Frame")
+horizontal.Size = UDim2.fromOffset(18, 2)
+horizontal.AnchorPoint = Vector2.new(0.5, 0.5)
+horizontal.Position = UDim2.fromScale(0.5, 0.5)
+horizontal.BorderSizePixel = 0
+horizontal.Parent = crosshair
+
+local vertical = Instance.new("Frame")
+vertical.Size = UDim2.fromOffset(2, 18)
+vertical.AnchorPoint = Vector2.new(0.5, 0.5)
+vertical.Position = UDim2.fromScale(0.5, 0.5)
+vertical.BorderSizePixel = 0
+vertical.Parent = crosshair
+
+--------------------------------------------------
+-- SILENT AIM FOV VISUALIZER
+--------------------------------------------------
+
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "SilentAimFOVCircle"
+fovCircle.Size = UDim2.fromOffset(silentAimFOV * 2, silentAimFOV * 2)
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.Visible = silentAimFOVVisible
+fovCircle.Parent = gui
+
+local fovAspect = Instance.new("UIAspectRatioConstraint")
+fovAspect.AspectRatio = 1
+fovAspect.Parent = fovCircle
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+fovCorner.Parent = fovCircle
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Thickness = 2
+fovStroke.Transparency = 0.15
+fovStroke.Color = Color3.fromRGB(255, 255, 255)
+fovStroke.Parent = fovCircle
+
+--------------------------------------------------
+-- MAIN FRAME
+--------------------------------------------------
+
+local frame = Instance.new("Frame")
+frame.Name = "AimMenu"
+frame.Size = UDim2.fromOffset(300, 360)
+frame.Position = UDim2.new(0, 25, 0.5, -180)
+frame.BackgroundColor3 = Color3.fromRGB(15, 15, 19)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+
+local frameCorner = Instance.new("UICorner")
+frameCorner.CornerRadius = UDim.new(0, 14)
+frameCorner.Parent = frame
+
+--------------------------------------------------
+-- TITLE BAR
+--------------------------------------------------
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 42)
+titleBar.BackgroundColor3 = Color3.fromRGB(9, 9, 12)
+titleBar.BorderSizePixel = 0
+titleBar.Active = true
+titleBar.Parent = frame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 14)
+titleCorner.Parent = titleBar
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -65, 1, 0)
+title.Position = UDim2.fromOffset(15, 0)
+title.BackgroundTransparency = 1
+title.Text = "AIM ASSIST"
+title.TextSize = 18
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = Color3.fromRGB(245, 245, 250)
+title.Parent = titleBar
+
+--------------------------------------------------
+-- MINIMIZE CROSSHAIR BUTTON
+--------------------------------------------------
+
+local minimizeButton = Instance.new("ImageButton")
+minimizeButton.Name = "MinimizeCrosshair"
+minimizeButton.Size = UDim2.fromOffset(30, 30)
+minimizeButton.AnchorPoint = Vector2.new(0.5, 0.5)
+minimizeButton.Position = UDim2.new(1, -21, 0.5, 0)
+minimizeButton.BackgroundColor3 = Color3.fromRGB(5, 5, 7)
+minimizeButton.AutoButtonColor = false
+minimizeButton.Image = ""
+minimizeButton.Parent = titleBar
+
+local miniCorner = Instance.new("UICorner")
+miniCorner.CornerRadius = UDim.new(1, 0)
+miniCorner.Parent = minimizeButton
+
+local miniHorizontal = Instance.new("Frame")
+miniHorizontal.Size = UDim2.fromOffset(14, 2)
+miniHorizontal.AnchorPoint = Vector2.new(0.5, 0.5)
+miniHorizontal.Position = UDim2.fromScale(0.5, 0.5)
+miniHorizontal.BorderSizePixel = 0
+miniHorizontal.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+miniHorizontal.Parent = minimizeButton
+
+local miniVertical = Instance.new("Frame")
+miniVertical.Size = UDim2.fromOffset(2, 14)
+miniVertical.AnchorPoint = Vector2.new(0.5, 0.5)
+miniVertical.Position = UDim2.fromScale(0.5, 0.5)
+miniVertical.BorderSizePixel = 0
+miniVertical.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+miniVertical.Parent = minimizeButton
+
+--------------------------------------------------
+-- CONTENT
+--------------------------------------------------
+
+local content = Instance.new("ScrollingFrame")
+content.Name = "Content"
+content.Size = UDim2.new(1, -24, 1, -57)
+content.Position = UDim2.fromOffset(12, 51)
+content.BackgroundTransparency = 1
+content.BorderSizePixel = 0
+content.ScrollBarThickness = 4
+content.ScrollBarImageTransparency = 0.15
+content.CanvasSize = UDim2.fromOffset(0, 0)
+content.ScrollingDirection = Enum.ScrollingDirection.Y
+content.Active = true
+content.Parent = frame
+
+local contentPadding = Instance.new("UIPadding")
+contentPadding.PaddingRight = UDim.new(0, 4)
+contentPadding.Parent = content
+
+local contentLayout = Instance.new("UIListLayout")
+contentLayout.Padding = UDim.new(0, 7)
+contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+contentLayout.Parent = content
+
+contentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    content.CanvasSize = UDim2.fromOffset(0, contentLayout.AbsoluteContentSize.Y + 12)
+end)
+
+--------------------------------------------------
+-- CURRENT TARGET DISPLAY
+--------------------------------------------------
+
+local targetDisplay = Instance.new("Frame")
+targetDisplay.Size = UDim2.new(1, 0, 0, 38)
+targetDisplay.BackgroundColor3 = Color3.fromRGB(25, 25, 31)
+targetDisplay.BorderSizePixel = 0
+targetDisplay.Parent = content
+
+local targetDisplayCorner = Instance.new("UICorner")
+targetDisplayCorner.CornerRadius = UDim.new(0, 8)
+targetDisplayCorner.Parent = targetDisplay
+
+local leftArrow = Instance.new("TextButton")
+leftArrow.Size = UDim2.fromOffset(36, 32)
+leftArrow.Position = UDim2.fromOffset(3, 3)
+leftArrow.Text = "â†"
+leftArrow.TextSize = 19
+leftArrow.Font = Enum.Font.GothamBold
+leftArrow.TextColor3 = Color3.fromRGB(235, 235, 240)
+leftArrow.BackgroundColor3 = Color3.fromRGB(31, 31, 38)
+leftArrow.BorderSizePixel = 0
+leftArrow.AutoButtonColor = false
+leftArrow.Parent = targetDisplay
+
+local leftCorner = Instance.new("UICorner")
+leftCorner.CornerRadius = UDim.new(0, 7)
+leftCorner.Parent = leftArrow
+
+local rightArrow = Instance.new("TextButton")
+rightArrow.Size = UDim2.fromOffset(36, 32)
+rightArrow.Position = UDim2.new(1, -39, 0, 3)
+rightArrow.Text = "â†’"
+rightArrow.TextSize = 19
+rightArrow.Font = Enum.Font.GothamBold
+rightArrow.TextColor3 = Color3.fromRGB(235, 235, 240)
+rightArrow.BackgroundColor3 = Color3.fromRGB(31, 31, 38)
+rightArrow.BorderSizePixel = 0
+rightArrow.AutoButtonColor = false
+rightArrow.Parent = targetDisplay
+
+local rightCorner = Instance.new("UICorner")
+rightCorner.CornerRadius = UDim.new(0, 7)
+rightCorner.Parent = rightArrow
+
+local targetName = Instance.new("TextLabel")
+targetName.Size = UDim2.new(1, -82, 1, 0)
+targetName.Position = UDim2.fromOffset(41, 0)
+targetName.BackgroundTransparency = 1
+targetName.Text = "Target: None"
+targetName.TextSize = 13
+targetName.Font = Enum.Font.GothamBold
+targetName.TextColor3 = Color3.fromRGB(225, 225, 230)
+targetName.TextXAlignment = Enum.TextXAlignment.Center
+targetName.Parent = targetDisplay
+
+--------------------------------------------------
+-- BUTTON CREATOR
+--------------------------------------------------
+
+local function createButton(text, y)
+
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, 0, 0, 34)
+	button.Text = text
+	button.TextSize = 13
+	button.Font = Enum.Font.GothamBold
+	button.TextColor3 = Color3.fromRGB(240, 240, 245)
+	button.BackgroundColor3 = Color3.fromRGB(31, 31, 38)
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+	button.Parent = content
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = button
+
+	return button
+end
+
+--------------------------------------------------
+-- OPTIONS
+--------------------------------------------------
+
+local selectButton = createButton("SELECT PLAYERS", 0)
+local aimButton = createButton("AIM: OFF", 0)
+local acceptedButton = createButton("ACCEPTED TARGETS: OFF", 0)
+local crosshairButton = createButton("CROSSHAIR: ON", 0)
+
+--------------------------------------------------
+-- SILENT AIM SECTION
+--------------------------------------------------
+
+local silentAimButton = createButton("SILENT AIM: OFF", 0)
+local fovVisibleButton = createButton("FOV CIRCLE: ON", 0)
+
+local silentAimFOVLabel = Instance.new("TextLabel")
+silentAimFOVLabel.Size = UDim2.new(1, 0, 0, 18)
+silentAimFOVLabel.BackgroundTransparency = 1
+silentAimFOVLabel.Text = "SILENT AIM FOV: 130"
+silentAimFOVLabel.TextSize = 12
+silentAimFOVLabel.Font = Enum.Font.GothamBold
+silentAimFOVLabel.TextColor3 = Color3.fromRGB(225, 225, 230)
+silentAimFOVLabel.TextXAlignment = Enum.TextXAlignment.Left
+silentAimFOVLabel.Parent = content
+
+local silentAimFOVBar = Instance.new("Frame")
+silentAimFOVBar.Name = "SilentAimFOVBar"
+silentAimFOVBar.Size = UDim2.new(1, 0, 0, 7)
+silentAimFOVBar.BackgroundColor3 = Color3.fromRGB(31, 31, 38)
+silentAimFOVBar.BorderSizePixel = 0
+silentAimFOVBar.Active = true
+silentAimFOVBar.Parent = content
+
+local silentAimFOVFill = Instance.new("Frame")
+silentAimFOVFill.Size = UDim2.new(silentAimFOV / 360, 0, 1, 0)
+silentAimFOVFill.BackgroundColor3 = Color3.fromRGB(70, 170, 95)
+silentAimFOVFill.BorderSizePixel = 0
+silentAimFOVFill.Parent = silentAimFOVBar
+
+local silentAimFOVKnob = Instance.new("Frame")
+silentAimFOVKnob.Size = UDim2.fromOffset(14, 14)
+silentAimFOVKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+silentAimFOVKnob.Position = UDim2.new(silentAimFOV / 360, 0, 0.5, 0)
+silentAimFOVKnob.BackgroundColor3 = Color3.fromRGB(235, 235, 240)
+silentAimFOVKnob.BorderSizePixel = 0
+silentAimFOVKnob.Active = true
+silentAimFOVKnob.Parent = silentAimFOVBar
+
+local silentAimFOVDragging = false
+local silentAimTouch = nil
+
+local function setSilentAimFOVFromX(x)
+    if not content.Visible then return end
+    local width = silentAimFOVBar.AbsoluteSize.X
+    if width <= 0 then return end
+    local relative = math.clamp((x - silentAimFOVBar.AbsolutePosition.X) / width, 0, 1)
+    silentAimFOV = math.floor(relative * 360 + 0.5)
+    silentAimFOVLabel.Text = "SILENT AIM FOV: " .. tostring(silentAimFOV)
+    silentAimFOVFill.Size = UDim2.new(silentAimFOV / 360, 0, 1, 0)
+    silentAimFOVKnob.Position = UDim2.new(silentAimFOV / 360, 0, 0.5, 0)
+    fovCircle.Size = UDim2.fromOffset(silentAimFOV * 2, silentAimFOV * 2)
+end
+
+silentAimFOVBar.InputBegan:Connect(function(input)
+    if not content.Visible then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        silentAimFOVDragging = true
+        setSilentAimFOVFromX(input.Position.X)
+    elseif input.UserInputType == Enum.UserInputType.Touch then
+        silentAimFOVDragging = true
+        silentAimTouch = input
+        setSilentAimFOVFromX(input.Position.X)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not silentAimFOVDragging or not content.Visible then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        setSilentAimFOVFromX(input.Position.X)
+    elseif input.UserInputType == Enum.UserInputType.Touch and input == silentAimTouch then
+        setSilentAimFOVFromX(input.Position.X)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        silentAimFOVDragging = false
+    elseif input.UserInputType == Enum.UserInputType.Touch and input == silentAimTouch then
+        silentAimFOVDragging = false
+        silentAimTouch = nil
+    end
+end)
+
+local silentAimConnection = nil
+
+silentAimButton.Activated:Connect(function()
+    silentAimEnabled = not silentAimEnabled
+
+    if silentAimEnabled then
+        silentAimButton.Text = "SILENT AIM: ON"
+
+        -- ==========================================
+        -- SILENT AIM ENABLED
+	local storage = game:GetService("ReplicatedStorage")
+	local youman = workspace.CurrentCamera 
+	local wow = require(storage.Modules.Utility)
+
+	local function rando() 
+    	local targets = {} 
+    	for _, v in ipairs(workspace:GetChildren()) do 
+        	if v:FindFirstChildOfClass("Humanoid") then 
+            	table.insert(targets, v) 
+        	elseif v.Name == "HurtEffect" then 
+            	for _, p in ipairs(v:GetChildren()) do 
+                	if p.ClassName ~= "Highlight" then table.insert(targets, p) end 
+            end 
+        end 
+    end 
+    return targets 
+end 
+
+local function thingidk(p)
+    local h = p:FindFirstChild("Head")
+    local root = p:FindFirstChild("HumanoidRootPart")
+    return (h and root) and (h.Position + (root.Velocity * 0)) or (h and h.Position)
+end
+
+local function idk() 
+    local target, min = nil, math.huge 
+    local char = game:GetService("Players").LocalPlayer.Character 
+    if not char then return end 
+    for _, p in ipairs(rando()) do 
+        if p ~= char and p:FindFirstChild("HumanoidRootPart") then 
+            local pos = thingidk(p)
+            local screen, vis = youman:WorldToViewportPoint(pos) 
+            if vis then 
+                local mag = (Vector2.new(youman.ViewportSize.X/2, youman.ViewportSize.Y/2) - Vector2.new(screen.X, screen.Y)).Magnitude 
+                if mag < min then target, min = p, mag end 
+            end 
+        end 
+    end 
+    return target 
+end 
+
+local old = wow.Raycast 
+wow.Raycast = function(...) 
+    local args = {...} 
+    if args[4] == 999 then 
+        local target = idk() 
+        if target then 
+            local p = thingidk(target)
+            if p then args[3] = p end
+        end
+    end 
+    return old(unpack(args)) 
+end
+
+
+    else
+        silentAimButton.Text = "SILENT AIM: OFF"
+
+        -- ==========================================
+        -- SILENT AIM DISABLED
+        -- Stop/disable the code here.
+        -- ==========================================
+
+        if silentAimConnection then
+            silentAimConnection:Disconnect()
+            silentAimConnection = nil
+        end
+    end
+end)
+
+fovVisibleButton.Activated:Connect(function()
+    silentAimFOVVisible = not silentAimFOVVisible
+    fovCircle.Visible = silentAimFOVVisible
+
+    if silentAimFOVVisible then
+        fovVisibleButton.Text = "FOV CIRCLE: ON"
+    else
+        fovVisibleButton.Text = "FOV CIRCLE: OFF"
+    end
+end)
+
+--------------------------------------------------
+-- PLAYER MENU
+--------------------------------------------------
+
+local targetMenu = Instance.new("ScrollingFrame")
+targetMenu.Name = "TargetMenu"
+targetMenu.Size = UDim2.fromOffset(260, 230)
+targetMenu.Position = UDim2.new(0, 390, 0.5, -140)
+targetMenu.BackgroundColor3 = Color3.fromRGB(15, 15, 19)
+targetMenu.BorderSizePixel = 0
+targetMenu.Visible = false
+targetMenu.ScrollBarThickness = 4
+targetMenu.CanvasSize = UDim2.fromOffset(0, 0)
+targetMenu.Parent = gui
+
+local menuCorner = Instance.new("UICorner")
+menuCorner.CornerRadius = UDim.new(0, 12)
+menuCorner.Parent = targetMenu
+
+local menuPadding = Instance.new("UIPadding")
+menuPadding.PaddingTop = UDim.new(0, 8)
+menuPadding.PaddingLeft = UDim.new(0, 8)
+menuPadding.PaddingRight = UDim.new(0, 8)
+menuPadding.Parent = targetMenu
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.Name
+layout.Parent = targetMenu
+
+--------------------------------------------------
+-- HIGHLIGHT CURRENT TARGET
+--------------------------------------------------
+
+local function removeTargetHighlight()
+
+	if currentHighlight then
+		currentHighlight:Destroy()
+		currentHighlight = nil
+	end
+end
+
+local function updateTargetHighlight()
+
+	removeTargetHighlight()
+
+	if not lockedPlayer then
+		return
+	end
+
+	local character = lockedPlayer.Character
+
+	if not character then
+		return
+	end
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "CurrentTargetHighlight"
+	highlight.Adornee = character
+	highlight.FillColor = Color3.fromRGB(255, 80, 80)
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	highlight.FillTransparency = 0.65
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = character
+
+	currentHighlight = highlight
+end
+
+--------------------------------------------------
+-- PLAYER IS ALIVE
+--------------------------------------------------
+
+local function isPlayerAlive(player)
+
+	if not player then
+		return false
+	end
+
+	if deadPlayers[player] then
+		return false
+	end
+
+	local character = player.Character
+
+	if not character then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if not humanoid then
+		return false
+	end
+
+	return humanoid.Health > 0
+end
+
+--------------------------------------------------
+-- TARGET LIST
+--------------------------------------------------
+
+local function getTargetList()
+
+	local list = {}
+
+	for _, player in ipairs(Players:GetPlayers()) do
+
+		if player ~= localPlayer then
+
+			if acceptedMode then
+
+				if acceptedPlayers[player]
+					and isPlayerAlive(player) then
+
+					table.insert(list, player)
+				end
+
+			else
+
+				table.insert(list, player)
+
+			end
+		end
+	end
+
+	table.sort(list, function(a, b)
+		return a.Name:lower() < b.Name:lower()
+	end)
+
+	return list
+end
+
+--------------------------------------------------
+-- CLOSEST ACCEPTED TARGET
+--------------------------------------------------
+
+local function getClosestAcceptedTarget()
+	if not acceptedMode then
+		return nil
+	end
+
+	-- Find the accepted player who is physically closest
+	-- to the local player's character. This does not depend
+	-- on the mouse/crosshair position or whether they are
+	-- currently on screen.
+	local localCharacter = localPlayer.Character
+	if not localCharacter then
+		return nil
+	end
+
+	local localRoot =
+		localCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not localRoot then
+		return nil
+	end
+
+	local closestPlayer = nil
+	local closestDistance = math.huge
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= localPlayer
+			and acceptedPlayers[player]
+			and not deadPlayers[player] then
+
+			local character = player.Character
+			local humanoid = character
+				and character:FindFirstChildOfClass("Humanoid")
+
+			local targetRoot = character
+				and character:FindFirstChild("HumanoidRootPart")
+
+			if humanoid
+				and humanoid.Health > 5
+				and targetRoot then
+
+				local distance =
+					(localRoot.Position - targetRoot.Position).Magnitude
+
+				if distance < closestDistance then
+					closestDistance = distance
+					closestPlayer = player
+				end
+			end
+		end
+	end
+
+	return closestPlayer
+end
+
+--------------------------------------------------
+-- SILENT AIM TARGET SELECTOR
+--------------------------------------------------
+
+-- Returns the closest valid target to the center of the screen
+-- inside the configured FOV. Your weapon/firing code can call
+-- this through the BindableFunction below.
+local function getSilentAimTarget()
+    if not silentAimEnabled then
+        return nil
+    end
+
+    local camera = workspace.CurrentCamera
+    if not camera then return nil end
+
+    local center = Vector2.new(
+        camera.ViewportSize.X * 0.5,
+        camera.ViewportSize.Y * 0.5
+    )
+
+    local closestPlayer = nil
+    local closestDistance = silentAimFOV
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= localPlayer
+            and acceptedPlayers[player]
+            and not deadPlayers[player] then
+
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+
+            if humanoid and humanoid.Health > 5 and root then
+                local screenPosition, onScreen = camera:WorldToViewportPoint(root.Position)
+
+                if onScreen then
+                    local distance = (Vector2.new(screenPosition.X, screenPosition.Y) - center).Magnitude
+
+                    if distance <= closestDistance then
+                        closestDistance = distance
+                        closestPlayer = player
+                    end
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+-- Game-native interface for the weapon system.
+local silentAimFunction = Instance.new("BindableFunction")
+silentAimFunction.Name = "GetSilentAimTarget"
+silentAimFunction.OnInvoke = getSilentAimTarget
+silentAimFunction.Parent = gui
+
+--------------------------------------------------
+-- UPDATE TARGET DISPLAY
+--------------------------------------------------
+
+local function updateTargetDisplay()
+
+	if lockedPlayer
+		and lockedPlayer.Parent == Players then
+
+		targetName.Text =
+			lockedPlayer.DisplayName
+
+	else
+
+		targetName.Text =
+			"Target: None"
+
+	end
+end
+
+--------------------------------------------------
+-- SET TARGET
+--------------------------------------------------
+
+local function setTarget(player)
+
+	if not player then
+
+		lockedPlayer = nil
+		currentIndex = 0
+
+		removeTargetHighlight()
+		updateTargetDisplay()
+
+		return
+	end
+
+	lockedPlayer = player
+
+	local list = getTargetList()
+
+	for i, playerInList in ipairs(list) do
+
+		if playerInList == player then
+			currentIndex = i
+			break
+		end
+
+	end
+
+	updateTargetDisplay()
+	updateTargetHighlight()
+end
+
+--------------------------------------------------
+-- FIND NEXT VALID TARGET
+--------------------------------------------------
+
+local function findNextAcceptedTarget(direction)
+
+	local list = getTargetList()
+
+	if #list == 0 then
+		return nil
+	end
+
+	if not lockedPlayer then
+		return list[1]
+	end
+
+	local index = 0
+
+	for i, player in ipairs(list) do
+
+		if player == lockedPlayer then
+			index = i
+			break
+		end
+
+	end
+
+	if index == 0 then
+		return list[1]
+	end
+
+	index += direction
+
+	if index > #list then
+		index = 1
+	elseif index < 1 then
+		index = #list
+	end
+
+	return list[index]
+end
+
+--------------------------------------------------
+-- FIND NEXT ACCEPTED TARGET
+--------------------------------------------------
+
+
+--------------------------------------------------
+-- CYCLE TARGET
+--------------------------------------------------
+
+local function cycleTarget(direction)
+
+	local list = getTargetList()
+
+	if #list == 0 then
+
+		lockedPlayer = nil
+		currentIndex = 0
+
+		removeTargetHighlight()
+		updateTargetDisplay()
+
+		return
+	end
+
+	if currentIndex < 1
+		or currentIndex > #list then
+
+		currentIndex = 0
+
+		if lockedPlayer then
+
+			for i, player in ipairs(list) do
+
+				if player == lockedPlayer then
+					currentIndex = i
+					break
+				end
+
+			end
+		end
+
+		if currentIndex == 0 then
+
+			if direction > 0 then
+				currentIndex = 1
+			else
+				currentIndex = #list
+			end
+
+		end
+
+	else
+
+		currentIndex += direction
+
+		if currentIndex > #list then
+			currentIndex = 1
+		elseif currentIndex < 1 then
+			currentIndex = #list
+		end
+
+	end
+
+	setTarget(list[currentIndex])
+end
+
+leftArrow.Activated:Connect(function()
+	cycleTarget(-1)
+end)
+
+rightArrow.Activated:Connect(function()
+	cycleTarget(1)
+end)
+
+--------------------------------------------------
+-- PLAYER BUTTON PULSE
+--------------------------------------------------
+
+local function pulsePlayerButton(button, accepted)
+
+	local normalColor
+
+	if accepted then
+		normalColor = Color3.fromRGB(35, 105, 55)
+	else
+		normalColor = Color3.fromRGB(28, 28, 35)
+	end
+
+	local lightColor =
+		Color3.fromRGB(75, 75, 85)
+
+	local fadeIn = TweenService:Create(
+		button,
+		TweenInfo.new(
+			0.1,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		),
+		{
+			BackgroundColor3 = lightColor
+		}
+	)
+
+	local fadeOut = TweenService:Create(
+		button,
+		TweenInfo.new(
+			0.15,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		),
+		{
+			BackgroundColor3 = normalColor
+		}
+	)
+
+	fadeIn:Play()
+
+	fadeIn.Completed:Connect(function()
+
+		if button.Parent then
+			fadeOut:Play()
+		end
+
+	end)
+end
+
+--------------------------------------------------
+-- REFRESH PLAYER MENU
+--------------------------------------------------
+
+local function refreshTargets()
+
+	for _, child in ipairs(targetMenu:GetChildren()) do
+
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+
+	end
+
+	for _, targetPlayer in ipairs(Players:GetPlayers()) do
+
+		if targetPlayer ~= localPlayer then
+
+			local isAccepted =
+				acceptedPlayers[targetPlayer] == true
+
+			local button = Instance.new("TextButton")
+			button.Name = targetPlayer.Name
+			button.Size = UDim2.new(1, 0, 0, 40)
+			button.Text = ""
+
+			if isAccepted then
+
+				button.BackgroundColor3 =
+					Color3.fromRGB(35, 105, 55)
+
+			else
+
+				button.BackgroundColor3 =
+					Color3.fromRGB(28, 28, 35)
+
+			end
+
+			button.BorderSizePixel = 0
+			button.AutoButtonColor = false
+			button.Parent = targetMenu
+
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 8)
+			corner.Parent = button
+
+			--------------------------------------------------
+			-- AVATAR
+			--------------------------------------------------
+
+			local avatar = Instance.new("ImageLabel")
+			avatar.Name = "Avatar"
+			avatar.Size = UDim2.fromOffset(32, 32)
+			avatar.Position = UDim2.fromOffset(4, 4)
+			avatar.BackgroundTransparency = 1
+			avatar.Parent = button
+
+			local avatarCorner = Instance.new("UICorner")
+			avatarCorner.CornerRadius = UDim.new(1, 0)
+			avatarCorner.Parent = avatar
+
+			task.spawn(function()
+
+				local success, image = pcall(function()
+
+					return Players:GetUserThumbnailAsync(
+						targetPlayer.UserId,
+						Enum.ThumbnailType.HeadShot,
+						Enum.ThumbnailSize.Size100x100
+					)
+
+				end)
+
+				if success and avatar.Parent then
+					avatar.Image = image
+				end
+
+			end)
+
+			--------------------------------------------------
+			-- PLAYER NAME
+			--------------------------------------------------
+
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Size = UDim2.new(1, -48, 1, 0)
+			nameLabel.Position = UDim2.fromOffset(45, 0)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Text = targetPlayer.DisplayName
+			nameLabel.TextSize = 13
+			nameLabel.Font = Enum.Font.Gotham
+			nameLabel.TextColor3 =
+				Color3.fromRGB(235, 235, 240)
+			nameLabel.TextXAlignment =
+				Enum.TextXAlignment.Left
+			nameLabel.Parent = button
+
+			--------------------------------------------------
+			-- PLAYER SELECT
+			--------------------------------------------------
+
+			button.Activated:Connect(function()
+
+				if acceptedMode then
+
+					--------------------------------------------------
+					-- ACCEPT / REJECT PLAYER
+					--------------------------------------------------
+
+					acceptedPlayers[targetPlayer] =
+						not acceptedPlayers[targetPlayer]
+
+					selectClosestAcceptedTarget()
+
+					refreshTargets()
+
+				else
+
+					--------------------------------------------------
+					-- MANUAL MODE
+					--------------------------------------------------
+
+					setTarget(targetPlayer)
+
+					pulsePlayerButton(
+						button,
+						false
+					)
+
+					task.delay(0.12, function()
+
+						if button.Parent then
+							targetMenu.Visible = false
+						end
+
+					end)
+
+				end
+
+			end)
+
+		end
+	end
+
+	task.defer(function()
+
+		targetMenu.CanvasSize =
+			UDim2.fromOffset(
+				0,
+				layout.AbsoluteContentSize.Y + 20
+			)
+
+	end)
+end
+
+--------------------------------------------------
+-- SELECT PLAYERS
+--------------------------------------------------
+
+selectButton.Activated:Connect(function()
+
+	refreshTargets()
+
+	targetMenu.Visible =
+		not targetMenu.Visible
+
+end)
+
+--------------------------------------------------
+-- ACCEPTED TARGET MODE
+--------------------------------------------------
+
+acceptedButton.Activated:Connect(function()
+
+	acceptedMode =
+		not acceptedMode
+
+	if acceptedMode then
+
+		acceptedButton.Text =
+			"ACCEPTED TARGETS: ON"
+
+		currentIndex = 0
+		selectClosestAcceptedTarget()
+
+	else
+
+		acceptedButton.Text =
+			"ACCEPTED TARGETS: OFF"
+
+		currentIndex = 0
+
+		if lockedPlayer
+			and lockedPlayer.Parent == Players then
+
+			setTarget(lockedPlayer)
+
+		else
+
+			updateTargetDisplay()
+
+		end
+	end
+
+	refreshTargets()
+
+end)
+
+--------------------------------------------------
+-- AIM BUTTON
+--------------------------------------------------
+
+aimButton.Activated:Connect(function()
+
+	if not lockedPlayer then
+
+		targetName.Text =
+			"Target: Select one first!"
+
+		return
+	end
+
+	targetLock =
+		not targetLock
+
+	if targetLock then
+
+		aimButton.Text =
+			"AIM: ON"
+
+	else
+
+		aimButton.Text =
+			"AIM: OFF"
+
+	end
+
+end)
+
+--------------------------------------------------
+-- CROSSHAIR TOGGLE
+--------------------------------------------------
+
+crosshairButton.Activated:Connect(function()
+
+	crosshairEnabled =
+		not crosshairEnabled
+
+	crosshair.Visible =
+		crosshairEnabled
+
+	if crosshairEnabled then
+
+		crosshairButton.Text =
+			"CROSSHAIR: ON"
+
+	else
+
+		crosshairButton.Text =
+			"CROSSHAIR: OFF"
+
+	end
+
+end)
+
+--------------------------------------------------
+-- MOBILE / MOUSE DRAGGING
+--------------------------------------------------
+
+local dragging = false
+local dragStart = nil
+local startPosition = nil
+local dragInput = nil
+
+titleBar.InputBegan:Connect(function(input)
+
+	if input.UserInputType ==
+		Enum.UserInputType.MouseButton1
+		or input.UserInputType ==
+		Enum.UserInputType.Touch then
+
+		dragging = true
+		dragStart = input.Position
+		startPosition = frame.Position
+		dragInput = input
+
+		input.Changed:Connect(function()
+
+			if input.UserInputState ==
+				Enum.UserInputState.End then
+
+				dragging = false
+				dragInput = nil
+
+			end
+
+		end)
+
+	end
+
+end)
+
+titleBar.InputChanged:Connect(function(input)
+
+	if input.UserInputType ==
+		Enum.UserInputType.MouseMovement
+		or input.UserInputType ==
+		Enum.UserInputType.Touch then
+
+		dragInput = input
+
+	end
+
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+
+	if dragging and input == dragInput then
+
+		local delta =
+			input.Position - dragStart
+
+		frame.Position =
+			UDim2.new(
+				startPosition.X.Scale,
+				startPosition.X.Offset + delta.X,
+				startPosition.Y.Scale,
+				startPosition.Y.Offset + delta.Y
+			)
+
+	end
+
+end)
+
+--------------------------------------------------
+-- MINIMIZE ICON ANIMATION
+--------------------------------------------------
+
+local function animateMinimizeIcon()
+
+	local white =
+		Color3.fromRGB(255, 255, 255)
+
+	local rgb =
+		Color3.fromHSV(
+			math.random(),
+			0.55,
+			0.9
+		)
+
+	local fadeIn = TweenInfo.new(
+		0.15,
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	local fadeOut = TweenInfo.new(
+		0.15,
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	TweenService:Create(
+		miniHorizontal,
+		fadeIn,
+		{
+			BackgroundColor3 = rgb
+		}
+	):Play()
+
+	TweenService:Create(
+		miniVertical,
+		fadeIn,
+		{
+			BackgroundColor3 = rgb
+		}
+	):Play()
+
+	task.delay(0.15, function()
+
+		TweenService:Create(
+			miniHorizontal,
+			fadeOut,
+			{
+				BackgroundColor3 = white
+			}
+		):Play()
+
+		TweenService:Create(
+			miniVertical,
+			fadeOut,
+			{
+				BackgroundColor3 = white
+			}
+		):Play()
+
+	end)
+
+	minimizeButton.Rotation = 0
+
+	local rotationTween = TweenService:Create(
+		minimizeButton,
+		TweenInfo.new(
+			0.5,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		),
+		{
+			Rotation = 360
+		}
+	)
+
+	rotationTween:Play()
+
+	rotationTween.Completed:Connect(function()
+
+		minimizeButton.Rotation = 0
+
+	end)
+
+end
+
+--------------------------------------------------
+-- MINIMIZE / RESTORE
+--------------------------------------------------
+
+local function setMinimized(state)
+
+	minimized = state
+
+	animateMinimizeIcon()
+
+	if minimized then
+
+		content.Visible = false
+		targetMenu.Visible = false
+
+		TweenService:Create(
+			frame,
+			TweenInfo.new(
+				0.25,
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			),
+			{
+				Size = UDim2.fromOffset(300, 42)
+			}
+		):Play()
+
+	else
+
+		local tween = TweenService:Create(
+			frame,
+			TweenInfo.new(
+				0.25,
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			),
+			{
+				Size = UDim2.fromOffset(300, 360)
+			}
+		)
+
+		tween:Play()
+
+		tween.Completed:Connect(function()
+
+			if not minimized then
+				content.Visible = true
+			end
+
+		end)
+
+	end
+
+end
+
+minimizeButton.Activated:Connect(function()
+
+	setMinimized(not minimized)
+
+end)
+
+--------------------------------------------------
+-- AUTOMATIC ACCEPTED-TARGET SELECTION
+--------------------------------------------------
+
+local function selectClosestAcceptedTarget()
+	local closest = getClosestAcceptedTarget()
+	if closest then setTarget(closest) end
+end
+
+local function selectNextAcceptedTarget()
+	local list = getTargetList()
+	if #list == 0 then setTarget(nil); return end
+	local index = 0
+	for i, player in ipairs(list) do
+		if player == lockedPlayer then index = i; break end
+	end
+	if index == 0 then setTarget(list[1]); return end
+	local nextIndex = (index % #list) + 1
+	setTarget(list[nextIndex])
+end
+
+--------------------------------------------------
+-- HANDLE TARGET DEATH
+--------------------------------------------------
+
+local function handleTargetDeath(player)
+	deadPlayers[player] = true
+	if player == lockedPlayer then
+		removeTargetHighlight()
+		if acceptedMode then
+			selectNextAcceptedTarget()
+		else
+			updateTargetDisplay()
+		end
+	end
+	if targetMenu.Visible then refreshTargets() end
+end
+
+--------------------------------------------------
+-- WATCH PLAYER CHARACTER
+--------------------------------------------------
+
+local function watchPlayer(player)
+
+	if player == localPlayer then
+		return
+	end
+
+	player.CharacterAdded:Connect(function(character)
+
+		--------------------------------------------------
+		-- Respawn makes the player eligible again.
+		--------------------------------------------------
+
+		deadPlayers[player] = nil
+
+		local humanoid =
+			character:WaitForChild(
+				"Humanoid",
+				5
+			)
+
+		if humanoid then
+
+			humanoid.Died:Connect(function()
+
+				handleTargetDeath(player)
+
+			end)
+
+		end
+
+		--------------------------------------------------
+		-- Recreate highlight if this is still the
+		-- selected player.
+		--------------------------------------------------
+
+		if player == lockedPlayer then
+
+			task.defer(function()
+
+				updateTargetHighlight()
+
+			end)
+
+		end
+
+		if targetMenu.Visible then
+			refreshTargets()
+		end
+
+	end)
+
+	--------------------------------------------------
+	-- Handle a character that already exists.
+	--------------------------------------------------
+
+	if player.Character then
+
+		local character = player.Character
+
+		local humanoid =
+			character:FindFirstChildOfClass(
+				"Humanoid"
+			)
+
+		if humanoid then
+
+			if humanoid.Health <= 0 then
+
+				deadPlayers[player] = true
+
+			else
+
+				deadPlayers[player] = nil
+
+			end
+
+			humanoid.Died:Connect(function()
+
+				handleTargetDeath(player)
+
+			end)
+
+		end
+
+	end
+
+end
+
+--------------------------------------------------
+-- AIM UPDATE
+--------------------------------------------------
+
+local function updateLock()
+
+	if not targetLock then
+		return
+	end
+
+	if not lockedPlayer then
+
+		targetLock = false
+		aimButton.Text = "AIM: OFF"
+
+		return
+	end
+
+	if lockedPlayer.Parent ~= Players then
+
+		lockedPlayer = nil
+		targetLock = false
+
+		removeTargetHighlight()
+		updateTargetDisplay()
+
+		aimButton.Text = "AIM: OFF"
+
+		return
+	end
+
+	--------------------------------------------------
+	-- WAIT FOR THE CURRENT TARGET TO RESPAWN
+	--------------------------------------------------
+
+	-- Keep the aimbot enabled while the selected target is dead.
+	-- The target remains selected and aiming resumes automatically
+	-- when CharacterAdded clears deadPlayers for that player.
+	if not isPlayerAlive(lockedPlayer) then
+		return
+	end
+
+	local character =
+		lockedPlayer.Character
+
+	if not character then
+		return
+	end
+
+	local humanoid =
+		character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if humanoid
+		and humanoid.Health <= 5 then
+
+		if acceptedMode then
+			selectNextAcceptedTarget()
+		else
+			handleTargetDeath(lockedPlayer)
+		end
+		return
+	end
+
+	--------------------------------------------------
+	-- UPPER TORSO
+	--------------------------------------------------
+
+	local aimPart =
+		character:FindFirstChild("UpperTorso")
+
+	if not aimPart then
+
+		aimPart =
+			character:FindFirstChild("Torso")
+
+	end
+
+	if not aimPart then
+		return
+	end
+
+	--------------------------------------------------
+	-- AIM POINT
+	--
+	-- Slightly above the UpperTorso center.
+	--------------------------------------------------
+
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+
+	local distance = (camera.CFrame.Position - aimPart.Position).Magnitude
+	local verticalOffset = math.clamp(0.5 + (distance / 500), 0.5, 0.85)
+
+	local aimPoint =
+		aimPart.Position +
+		Vector3.new(0, verticalOffset, 0)
+
+	--------------------------------------------------
+	-- CAMERA
+	--------------------------------------------------
+
+	camera.CFrame =
+		CFrame.lookAt(
+			camera.CFrame.Position,
+			aimPoint
+		)
+
+end
+
+--------------------------------------------------
+-- RGB CROSSHAIR + AIM LOOP
+--------------------------------------------------
+
+local hue = 0
+
+RunService.RenderStepped:Connect(function(deltaTime)
+
+	hue =
+		(hue + deltaTime * 0.5) % 1
+
+	local rainbow =
+		Color3.fromHSV(
+			hue,
+			1,
+			1
+		)
+
+	horizontal.BackgroundColor3 =
+		rainbow
+
+	vertical.BackgroundColor3 =
+		rainbow
+
+	if acceptedMode then
+		local valid = false
+		if lockedPlayer and acceptedPlayers[lockedPlayer] and isPlayerAlive(lockedPlayer) then
+			local character = lockedPlayer.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			valid = humanoid and humanoid.Health > 5
+		end
+		if not valid then selectClosestAcceptedTarget() end
+	end
+
+	if targetLock then
+		updateLock()
+	end
+
+end)
+
+--------------------------------------------------
+-- PLAYER JOIN
+--------------------------------------------------
+
+Players.PlayerAdded:Connect(function(player)
+
+	watchPlayer(player)
+
+	if targetMenu.Visible then
+		refreshTargets()
+	end
+
+end)
+
+--------------------------------------------------
+-- PLAYER LEAVES
+--------------------------------------------------
+
+Players.PlayerRemoving:Connect(function(leavingPlayer)
+
+	acceptedPlayers[leavingPlayer] = nil
+	deadPlayers[leavingPlayer] = nil
+
+	if leavingPlayer == lockedPlayer then
+
+		lockedPlayer = nil
+		targetLock = false
+		currentIndex = 0
+
+		removeTargetHighlight()
+
+		targetName.Text =
+			"Target: None"
+
+		aimButton.Text =
+			"AIM: OFF"
+
+		--------------------------------------------------
+		-- If accepted mode is active, immediately
+		-- choose the next accepted player.
+		--------------------------------------------------
+
+		if acceptedMode then
+
+			selectClosestAcceptedTarget()
+
+		end
+
+	end
+
+	if targetMenu.Visible then
+		refreshTargets()
+	end
+
+end)
+
+--------------------------------------------------
+-- INITIAL PLAYER WATCHERS
+--------------------------------------------------
+
+for _, player in ipairs(Players:GetPlayers()) do
+
+	if player ~= localPlayer then
+		watchPlayer(player)
+	end
+
+end
+
+--------------------------------------------------
+-- INITIAL SETUP
+--------------------------------------------------
+
+updateTargetDisplay()
